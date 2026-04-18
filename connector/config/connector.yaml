@@ -1,0 +1,42 @@
+local_llm:
+  endpoint: http://127.0.0.1:11434
+  model: qwen2.5:7b-instruct
+  timeout_s: 60
+
+external_llm:
+  enabled: false                # MUST stay false unless explicitly opted in
+  provider: openai_compat
+  endpoint: ""
+  model: ""
+  api_key_env: CONNECTOR_EXTERNAL_API_KEY
+  allow_domains: []             # empty = deny all; fail-closed
+  require_redaction: true       # cannot be disabled
+
+storage:
+  db_path: ./connector.db
+  raw_msg_ttl_days: 30
+
+windowing:
+  max_messages: 30
+  idle_seconds: 90
+  max_wall_minutes: 15
+
+sources:
+  wechat:
+    enabled: true
+    wcferry_host: 127.0.0.1
+    wcferry_port: 10086
+  feishu:
+    enabled: false
+    bind: 127.0.0.1
+    port: 8701
+    verification_token_env: FEISHU_VERIFICATION_TOKEN
+    encrypt_key_env: FEISHU_ENCRYPT_KEY
+  slack:
+    enabled: false
+    bind: 127.0.0.1
+    port: 8702
+    signing_secret_env: SLACK_SIGNING_SECRET
+
+exporter:
+  kind: none                    # v2: secondaries|ndjson|http

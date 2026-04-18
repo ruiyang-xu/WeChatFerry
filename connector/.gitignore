@@ -1,0 +1,8 @@
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+connector.db
+connector.db-journal
+connector.db-wal
+connector.db-shm
