@@ -19,6 +19,7 @@ add_library(sdk SHARED
 target_link_libraries(sdk PRIVATE
   version
   shlwapi
+  rstrtmgr
   spdlog::spdlog
   c++
 )

@@ -61,12 +61,16 @@ class Wcf():
         port (int): `wcferry` RPC 服务器端口，默认为 10086，接收消息会占用 `port+1` 端口
         debug (bool): 是否开启调试模式（仅本地启动有效）
         block (bool): 是否阻塞等待微信登录，不阻塞的话可以手动获取登录二维码主动登录
+        wxid (str): 仅在本地启动时生效。Windows 同时登录多个微信时，通过此参数指定
+            要注入的目标账号的 wxid（对应 `Documents\\WeChat Files\\{wxid}` 目录）。
+            留空时沿用原行为——自动选择第一个 `WeChat.exe` 进程。
 
     Attributes:
         contacts (list): 联系人缓存，调用 `get_contacts` 后更新
     """
 
-    def __init__(self, host: str = None, port: int = 10086, debug: bool = True, block: bool = True) -> None:
+    def __init__(self, host: str = None, port: int = 10086, debug: bool = True, block: bool = True,
+                 wxid: str = "") -> None:
         self._local_mode = False
         self._is_running = False
         self._is_receiving_msg = False
@@ -82,7 +86,7 @@ class Wcf():
         if host is None:
             self._local_mode = True
             self.host = "127.0.0.1"
-            self._sdk_init(debug, port)
+            self._sdk_init(debug, port, wxid)
 
         self.cmd_url = f"tcp://{self.host}:{self.port}"
 
@@ -124,10 +128,16 @@ class Wcf():
         except subprocess.CalledProcessError as e:
             self.LOG.error(f"修改控制台代码页失败: {e}")
 
-    def _sdk_init(self, debug, port):
+    def _sdk_init(self, debug, port, wxid: str = ""):
         sdk = ctypes.cdll.LoadLibrary(f"{self._wcf_root}/sdk.dll")
-        if sdk.WxInitSDK(debug, port) != 0:
-            self.LOG.error("初始化失败！")
+        if wxid:
+            sdk.WxInitSDKEx.argtypes = [ctypes.c_bool, ctypes.c_int, ctypes.c_char_p]
+            sdk.WxInitSDKEx.restype = ctypes.c_int
+            rc = sdk.WxInitSDKEx(debug, port, wxid.encode("utf-8"))
+        else:
+            rc = sdk.WxInitSDK(debug, port)
+        if rc != 0:
+            self.LOG.error(f"初始化失败！(rc={rc}, wxid={wxid or '<auto>'})")
             os._exit(-1)
 
         # 主动卸载

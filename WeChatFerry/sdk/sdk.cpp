@@ -99,7 +99,7 @@ static std::string get_dll_path(bool debug)
     return path.string();
 }
 extern "C" {
-__declspec(dllexport) int WxInitSDK(bool debug, int port)
+__declspec(dllexport) int WxInitSDKEx(bool debug, int port, const char *wxid)
 {
     if (!show_disclaimer()) {
         exit(-1); // 用户拒绝协议，退出程序
@@ -113,9 +113,12 @@ __declspec(dllexport) int WxInitSDK(bool debug, int port)
         return ERROR_FILE_NOT_FOUND; // DLL 文件路径不存在
     }
 
-    status = util::open_wechat(wcPid);
+    std::string targetWxid = (wxid && *wxid) ? std::string(wxid) : std::string();
+    status                 = util::open_wechat(wcPid, targetWxid);
     if (status != 0) {
-        util::MsgBox(NULL, "打开微信失败", "WxInitSDK", 0);
+        std::string msg = targetWxid.empty() ? std::string("打开微信失败")
+                                             : std::string("未找到已登录 wxid [") + targetWxid + "] 的微信";
+        util::MsgBox(NULL, msg, "WxInitSDK", 0);
         return status;
     }
 
@@ -140,6 +143,8 @@ __declspec(dllexport) int WxInitSDK(bool debug, int port)
 
     return status;
 }
+
+__declspec(dllexport) int WxInitSDK(bool debug, int port) { return WxInitSDKEx(debug, port, nullptr); }
 
 __declspec(dllexport) int WxDestroySDK()
 {

@@ -1,5 +1,6 @@
 ﻿#include "util.h"
 
+#include <algorithm>
 #include <codecvt>
 #include <filesystem>
 #include <locale>
@@ -8,12 +9,15 @@
 #include <wchar.h>
 
 #include <Shlwapi.h>
+#include <ShlObj.h>
+#include <RestartManager.h>
 #include <tlhelp32.h>
 
 #include "log.hpp"
 
 #pragma comment(lib, "shlwapi")
 #pragma comment(lib, "Version.lib")
+#pragma comment(lib, "rstrtmgr.lib")
 
 namespace fs = std::filesystem;
 
@@ -72,6 +76,92 @@ static DWORD get_wechat_pid()
     }
     CloseHandle(hSnapshot);
     return pid;
+}
+
+std::vector<DWORD> list_wechat_pids()
+{
+    std::vector<DWORD> pids;
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE) return pids;
+
+    PROCESSENTRY32W pe32   = { sizeof(PROCESSENTRY32W) };
+    std::wstring targetExe = s2w(WECHATEXE);
+    while (Process32NextW(hSnapshot, &pe32)) {
+        if (pe32.szExeFile == targetExe) {
+            pids.push_back(pe32.th32ProcessID);
+        }
+    }
+    CloseHandle(hSnapshot);
+    return pids;
+}
+
+// 通过已登录微信在 `Documents\WeChat Files\{wxid}\` 目录下对数据库/配置文件持有的
+// 独占锁，借助 RestartManager 反查锁持有者 PID，从而把 wxid 精确映射到对应的
+// WeChat.exe 进程。
+DWORD find_wechat_pid_by_wxid(const std::string &wxid)
+{
+    if (wxid.empty()) return 0;
+
+    wchar_t docsPath[MAX_PATH] = { 0 };
+    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_PERSONAL, nullptr, SHGFP_TYPE_CURRENT, docsPath))) {
+        LOG_ERROR("无法获取 Documents 目录路径");
+        return 0;
+    }
+
+    fs::path dataRoot = fs::path(docsPath) / L"WeChat Files" / s2w(wxid);
+    if (!fs::exists(dataRoot)) {
+        LOG_ERROR("wxid 数据目录不存在: {}", w2s(dataRoot.wstring()));
+        return 0;
+    }
+
+    // 登录后微信会对这些文件持有独占锁，挑选其中任意一个能被定位到的即可。
+    const wchar_t *candidates[] = {
+        L"Msg\\MicroMsg.db",       L"Msg\\Misc.db", L"Msg\\MSG0.db", L"Msg\\Media.db",
+        L"config\\AccInfo.dat",    L"config\\accinfo.dat",
+    };
+
+    auto knownWeChatPids = list_wechat_pids();
+    if (knownWeChatPids.empty()) return 0;
+
+    for (const wchar_t *rel : candidates) {
+        fs::path candidate = dataRoot / rel;
+        if (!fs::exists(candidate)) continue;
+
+        DWORD session                           = 0;
+        WCHAR sessionKey[CCH_RM_SESSION_KEY + 1] = { 0 };
+        if (RmStartSession(&session, 0, sessionKey) != ERROR_SUCCESS) continue;
+
+        std::wstring candStr = candidate.wstring();
+        LPCWSTR files[1]     = { candStr.c_str() };
+        DWORD matchedPid     = 0;
+
+        if (RmRegisterResources(session, 1, files, 0, nullptr, 0, nullptr) == ERROR_SUCCESS) {
+            UINT nProcInfoNeeded = 0;
+            UINT nProcInfo       = 0;
+            DWORD rebootReason   = RmRebootReasonNone;
+
+            DWORD rc = RmGetList(session, &nProcInfoNeeded, &nProcInfo, nullptr, &rebootReason);
+            if ((rc == ERROR_MORE_DATA || rc == ERROR_SUCCESS) && nProcInfoNeeded > 0) {
+                std::vector<RM_PROCESS_INFO> infos(nProcInfoNeeded);
+                nProcInfo = nProcInfoNeeded;
+                if (RmGetList(session, &nProcInfoNeeded, &nProcInfo, infos.data(), &rebootReason) == ERROR_SUCCESS) {
+                    for (UINT i = 0; i < nProcInfo; ++i) {
+                        DWORD pid = infos[i].Process.dwProcessId;
+                        if (std::find(knownWeChatPids.begin(), knownWeChatPids.end(), pid)
+                            != knownWeChatPids.end()) {
+                            matchedPid = pid;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        RmEndSession(session);
+        if (matchedPid != 0) return matchedPid;
+    }
+
+    return 0;
 }
 
 static std::optional<std::string> get_wechat_path()
@@ -178,8 +268,18 @@ std::string get_wechat_version()
     return *version;
 }
 
-int open_wechat(DWORD &pid)
+int open_wechat(DWORD &pid, const std::string &wxid)
 {
+    if (!wxid.empty()) {
+        pid = find_wechat_pid_by_wxid(wxid);
+        if (pid != 0) {
+            return ERROR_SUCCESS;
+        }
+        // 指定了 wxid 但未找到对应的已登录进程：不自动拉起新微信，交由调用方处理
+        LOG_ERROR("未找到与 wxid [{}] 对应的已登录微信进程", wxid);
+        return ERROR_NOT_FOUND;
+    }
+
     pid = get_wechat_pid();
     if (pid != 0) {
         return ERROR_SUCCESS;
